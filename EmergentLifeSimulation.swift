@@ -180,28 +180,56 @@ final class SimulationModel: ObservableObject {
         }
     }
 
+    private struct GridKey: Hashable {
+        let gx: Int
+        let gy: Int
+    }
+
     private func resolveCollisions() {
         guard cells.count > 1 else { return }
-        for i in 0..<(cells.count - 1) {
-            for j in (i + 1)..<cells.count {
-                let c1 = cells[i]
-                let c2 = cells[j]
-                let dx = c1.position.x - c2.position.x
-                let dy = c1.position.y - c2.position.y
-                let distSq = dx * dx + dy * dy
-                let minDist = c1.radius + c2.radius
+        let maxDiameter = cells.map { $0.radius * 2 }.max() ?? 0
+        guard maxDiameter > 0 else { return }
+        let cellSize = maxDiameter
+        var grid: [GridKey: [Int]] = [:]
+        grid.reserveCapacity(cells.count)
+        var cellKeys: [GridKey] = []
+        cellKeys.reserveCapacity(cells.count)
 
-                if distSq > 0 && distSq < minDist * minDist {
-                    let dist = sqrt(distSq)
-                    let overlap = minDist - dist
-                    let nx = dx / dist
-                    let ny = dy / dist
-                    let force = overlap * 0.05
+        for (index, cell) in cells.enumerated() {
+            let gx = Int(floor(cell.position.x / cellSize))
+            let gy = Int(floor(cell.position.y / cellSize))
+            let key = GridKey(gx: gx, gy: gy)
+            cellKeys.append(key)
+            grid[key, default: []].append(index)
+        }
 
-                    c1.velocity.dx += nx * force
-                    c1.velocity.dy += ny * force
-                    c2.velocity.dx -= nx * force
-                    c2.velocity.dy -= ny * force
+        for i in 0..<cells.count {
+            let c1 = cells[i]
+            let key = cellKeys[i]
+            for gx in (key.gx - 1)...(key.gx + 1) {
+                for gy in (key.gy - 1)...(key.gy + 1) {
+                    let neighborKey = GridKey(gx: gx, gy: gy)
+                    guard let candidates = grid[neighborKey] else { continue }
+                    for j in candidates where j > i {
+                        let c2 = cells[j]
+                        let dx = c1.position.x - c2.position.x
+                        let dy = c1.position.y - c2.position.y
+                        let distSq = dx * dx + dy * dy
+                        let minDist = c1.radius + c2.radius
+
+                        if distSq > 0 && distSq < minDist * minDist {
+                            let dist = sqrt(distSq)
+                            let overlap = minDist - dist
+                            let nx = dx / dist
+                            let ny = dy / dist
+                            let force = overlap * 0.05
+
+                            c1.velocity.dx += nx * force
+                            c1.velocity.dy += ny * force
+                            c2.velocity.dx -= nx * force
+                            c2.velocity.dy -= ny * force
+                        }
+                    }
                 }
             }
         }
