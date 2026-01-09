@@ -84,12 +84,13 @@ final class SimulationModel: ObservableObject {
     func stepFrame() {
         guard environment.width > 0, environment.height > 0 else { return }
         for _ in 0..<max(speed, 1) {
+            let currentTime = Date().timeIntervalSince1970
             environment.step()
             resolveCollisions()
 
             var babies: [Cell] = []
             for cell in cells {
-                cell.timestep(environment: environment)
+                cell.timestep(environment: environment, time: currentTime)
                 if cell.alive && cell.energy > Constants.cloneEnergyThreshold {
                     if cells.count + babies.count < 500 {
                         babies.append(cell.clone())
@@ -169,14 +170,10 @@ final class SimulationModel: ObservableObject {
 
     private func drawDebris(in context: inout GraphicsContext) {
         for (key, molecules) in environment.debris.grid {
-            let parts = key.split(separator: ",")
-            guard parts.count == 2,
-                  let gx = Double(parts[0]),
-                  let gy = Double(parts[1]) else { continue }
             let total = molecules.values.reduce(0, +)
             let size = min(Constants.debrisGridSize - 2, max(2, Double(total) / 3))
-            let rect = CGRect(x: gx * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
-                              y: gy * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
+            let rect = CGRect(x: Double(key.x) * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
+                              y: Double(key.y) * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
                               width: size,
                               height: size)
             context.fill(Path(rect), with: .color(Color(red: 0.63, green: 0.55, blue: 0.7, opacity: 0.4)))
@@ -319,20 +316,20 @@ private final class Environment {
         debris = DebrisManager(width: width, height: height)
     }
 
-    func getPhysics(x: Double, y: Double) -> PhysicsSample {
+    func getPhysics(x: Double, y: Double, time: Double) -> PhysicsSample {
         let depth = y / height
         let lightIntensity = exp(-depth * Constants.lightAttenuation)
         let pressure = depth * Constants.pressureGradient
         let temperature = max(Constants.minTemperature, 20 - depth * Constants.temperatureGradient)
-        let turbulence = max(0, (1 - depth) * sin(x / 50 + Date().timeIntervalSince1970) * 0.1)
+        let turbulence = max(0, (1 - depth) * sin(x / 50 + time) * 0.1)
         return PhysicsSample(lightIntensity: lightIntensity,
                              pressure: pressure,
                              temperature: temperature,
                              turbulence: turbulence)
     }
 
-    func tryGetNutrient(x: Double, y: Double, traits: CellTraits) -> UInt8? {
-        let physics = getPhysics(x: x, y: y)
+    func tryGetNutrient(x: Double, y: Double, traits: CellTraits, time: Double) -> UInt8? {
+        let physics = getPhysics(x: x, y: y, time: time)
         let depth = y / height
 
         let gx = min(Int(x / Constants.nutrientGridSize), nutrientGridWidth - 1)
@@ -378,17 +375,21 @@ private final class Environment {
 private final class DebrisManager {
     let width: Double
     let height: Double
-    var grid: [String: [UInt8: Int]] = [:]
+    struct GridKey: Hashable {
+        let x: Int
+        let y: Int
+    }
+    var grid: [GridKey: [UInt8: Int]] = [:]
 
     init(width: Double, height: Double) {
         self.width = width
         self.height = height
     }
 
-    private func key(x: Double, y: Double) -> String {
+    private func key(x: Double, y: Double) -> GridKey {
         let gx = Int(x / Constants.debrisGridSize)
         let gy = Int(y / Constants.debrisGridSize)
-        return "\(gx),\(gy)"
+        return GridKey(x: gx, y: gy)
     }
 
     func add(x: Double, y: Double, molecules: [UInt8: Int]) {
@@ -431,22 +432,14 @@ private final class DebrisManager {
     func step() {
         let maxGy = Int(height / Constants.debrisGridSize) - 1
         let sortedKeys = grid.keys.sorted { lhs, rhs in
-            let lhsParts = lhs.split(separator: ",")
-            let rhsParts = rhs.split(separator: ",")
-            let lhsGy = Int(lhsParts.last ?? "0") ?? 0
-            let rhsGy = Int(rhsParts.last ?? "0") ?? 0
-            return lhsGy > rhsGy
+            lhs.y > rhs.y
         }
 
         for key in sortedKeys {
-            let parts = key.split(separator: ",")
-            guard parts.count == 2,
-                  let gx = Int(parts[0]),
-                  let gy = Int(parts[1]) else { continue }
-            if gy >= maxGy { continue }
+            if key.y >= maxGy { continue }
 
             if Double.random(in: 0..<1) < Constants.gravity {
-                let targetKey = "\(gx),\(gy + 1)"
+                let targetKey = GridKey(x: key.x, y: key.y + 1)
                 if grid[targetKey] == nil {
                     grid[targetKey] = [:]
                 }
@@ -529,10 +522,10 @@ private final class Cell {
         return traits
     }
 
-    func timestep(environment: Environment) {
+    func timestep(environment: Environment, time: Double) {
         guard alive else { return }
         age += 1
-        let physics = environment.getPhysics(x: position.x, y: position.y)
+        let physics = environment.getPhysics(x: position.x, y: position.y, time: time)
 
         entropy += Constants.entropyRate
         let maintenanceCost = entropy * Constants.maintenanceCost
@@ -547,7 +540,7 @@ private final class Cell {
 
         photoreceptionStep(intensity: physics.lightIntensity)
 
-        if let nutrient = environment.tryGetNutrient(x: position.x, y: position.y, traits: traits) {
+        if let nutrient = environment.tryGetNutrient(x: position.x, y: position.y, traits: traits, time: time) {
             addToPool(&cytoplasm, molecule: nutrient, amount: 1)
         }
 
@@ -556,7 +549,7 @@ private final class Cell {
         }
 
         if age % 5 == 0 {
-            motorStep(environment: environment)
+            motorStep(environment: environment, time: time)
         }
 
         velocity.dx += (Double.random(in: 0..<1) - 0.5) * 0.1 + physics.turbulence
@@ -676,12 +669,12 @@ private final class Cell {
         }
     }
 
-    private func motorStep(environment: Environment) {
-        let membraneCount = membrane.values.reduce(0, +)
-        let cytoplasmCount = cytoplasm.values.reduce(0, +)
-        guard membraneCount > 0, cytoplasmCount > 0, energy >= 3 else { return }
+    private func motorStep(environment: Environment, time: Double) {
+        let mems = poolList(membrane)
+        let fuels = poolList(cytoplasm)
+        guard !mems.isEmpty, !fuels.isEmpty, energy >= 3 else { return }
 
-        let gradients = sampleGradients(environment: environment)
+        let gradients = sampleGradients(environment: environment, time: time)
         var netForce = CGVector(dx: 0, dy: 0)
         let sampleSize = min(5, membraneCount)
 
@@ -709,7 +702,7 @@ private final class Cell {
         }
     }
 
-    private func sampleGradients(environment: Environment) -> [GradientSample] {
+    private func sampleGradients(environment: Environment, time: Double) -> [GradientSample] {
         let sampleDist: Double = 30
         let directions: [CGVector] = [
             CGVector(dx: sampleDist, dy: 0),
@@ -722,7 +715,7 @@ private final class Cell {
         for dir in directions {
             let sampleX = max(0, min(environment.width - 1, position.x + dir.dx))
             let sampleY = max(0, min(environment.height - 1, position.y + dir.dy))
-            let physics = environment.getPhysics(x: sampleX, y: sampleY)
+            let physics = environment.getPhysics(x: sampleX, y: sampleY, time: time)
             let density = environment.debris.getDensity(x: sampleX, y: sampleY)
 
             if physics.lightIntensity > 0.1 {
