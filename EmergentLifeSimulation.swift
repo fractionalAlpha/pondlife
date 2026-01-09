@@ -609,22 +609,19 @@ private final class Cell {
     }
 
     private func canRepair() -> Bool {
-        let mols = poolList(cytoplasm)
-        return mols.count > Constants.minRepairMolecules && energy > Constants.minRepairEnergy
+        let totalMolecules = cytoplasm.values.reduce(0, +)
+        return totalMolecules > Constants.minRepairMolecules && energy > Constants.minRepairEnergy
     }
 
     private func catalyticReactionStep() {
-        let mols = poolList(cytoplasm)
-        guard mols.count >= 3 else { return }
-        let catalystIndex = Int.random(in: 0..<mols.count)
-        let catalyst = mols[catalystIndex]
-        let availableIndices = mols.indices.filter { $0 != catalystIndex }
-        guard availableIndices.count >= 2 else { return }
-        let sub1Index = availableIndices.randomElement() ?? catalystIndex
-        let sub2Indices = availableIndices.filter { $0 != sub1Index }
-        guard let sub2Index = sub2Indices.randomElement() else { return }
-        let sub1 = mols[sub1Index]
-        let sub2 = mols[sub2Index]
+        let totalMolecules = cytoplasm.values.reduce(0, +)
+        guard totalMolecules >= 3 else { return }
+        var selectionPool = cytoplasm
+        guard let catalyst = randomMolecule(from: selectionPool) else { return }
+        addToPool(&selectionPool, molecule: catalyst, amount: -1)
+        guard let sub1 = randomMolecule(from: selectionPool) else { return }
+        addToPool(&selectionPool, molecule: sub1, amount: -1)
+        guard let sub2 = randomMolecule(from: selectionPool) else { return }
 
         let catalyticFit = popcount(catalyst & sub1 & sub2)
         if catalyticFit >= Constants.catalysisThreshold {
@@ -647,8 +644,18 @@ private final class Cell {
         if Double.random(in: 0..<1) > intensity || Double.random(in: 0..<1) > 0.5 {
             return
         }
-        let allMolecules = poolList(membrane) + poolList(cytoplasm)
-        guard let target = allMolecules.randomElement() else { return }
+        let membraneCount = membrane.values.reduce(0, +)
+        let cytoplasmCount = cytoplasm.values.reduce(0, +)
+        let totalCount = membraneCount + cytoplasmCount
+        guard totalCount > 0 else { return }
+        let selection = Int.random(in: 0..<totalCount)
+        let target: UInt8?
+        if selection < membraneCount {
+            target = randomMolecule(from: membrane)
+        } else {
+            target = randomMolecule(from: cytoplasm)
+        }
+        guard let target else { return }
         let props = getMoleculeProperties(target)
         let absorptionChance = Double(props.conjugation) / 7.0
         if Double.random(in: 0..<1) < absorptionChance {
@@ -670,16 +677,16 @@ private final class Cell {
     }
 
     private func motorStep(environment: Environment) {
-        let mems = poolList(membrane)
-        let fuels = poolList(cytoplasm)
-        guard !mems.isEmpty, !fuels.isEmpty, energy >= 3 else { return }
+        let membraneCount = membrane.values.reduce(0, +)
+        let cytoplasmCount = cytoplasm.values.reduce(0, +)
+        guard membraneCount > 0, cytoplasmCount > 0, energy >= 3 else { return }
 
         let gradients = sampleGradients(environment: environment)
         var netForce = CGVector(dx: 0, dy: 0)
-        let sampleSize = min(5, mems.count)
+        let sampleSize = min(5, membraneCount)
 
         for _ in 0..<sampleSize {
-            guard let mem = mems.randomElement() else { continue }
+            guard let mem = randomMolecule(from: membrane) else { continue }
             for gradient in gradients {
                 let affinity = Double(popcount(mem & gradient.moleculeType)) / 8.0
                 if affinity > 0.4 {
@@ -693,7 +700,7 @@ private final class Cell {
         }
 
         if abs(netForce.dx) > 0.1 || abs(netForce.dy) > 0.1 {
-            let fuel = fuels[0]
+            guard let fuel = randomMolecule(from: cytoplasm) else { return }
             let fuelPower = Double(popcount(fuel)) * 0.15
             velocity.dx += netForce.dx * fuelPower
             velocity.dy += netForce.dy * fuelPower
@@ -792,14 +799,18 @@ private final class Cell {
         }
     }
 
-    private func poolList(_ pool: [UInt8: Int]) -> [UInt8] {
-        var list: [UInt8] = []
+    private func randomMolecule(from pool: [UInt8: Int]) -> UInt8? {
+        let total = pool.values.reduce(0, +)
+        guard total > 0 else { return nil }
+        var selection = Int.random(in: 0..<total)
         for (mol, count) in pool {
-            if count > 0 {
-                list.append(contentsOf: Array(repeating: mol, count: count))
+            guard count > 0 else { continue }
+            if selection < count {
+                return mol
             }
+            selection -= count
         }
-        return list
+        return nil
     }
 }
 
