@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emergent Life v3.0 (Fully Emergent) - Fixed</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; }
+        .hud-panel { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.1); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col relative">
+
+    <!-- Compact HUD -->
+    <div class="absolute top-2 left-2 right-2 z-10 flex flex-wrap gap-2 items-start pointer-events-none">
+        <!-- Stats Bar -->
+        <div class="hud-panel rounded px-3 py-2 flex items-center gap-4 text-xs font-mono pointer-events-auto shadow-lg">
+            <div>
+                <span class="text-slate-400">POP</span>
+                <span id="pop-count" class="text-emerald-400 text-sm font-bold ml-1">0</span>
+            </div>
+            <div>
+                <span class="text-slate-400">AVG NRG</span>
+                <span id="avg-energy" class="text-amber-400 text-sm font-bold ml-1">0</span>
+            </div>
+            <div>
+                <span class="text-slate-400">AVG ENT</span>
+                <span id="avg-entropy" class="text-red-400 text-sm font-bold ml-1">0</span>
+            </div>
+            <div class="h-4 w-px bg-slate-600 mx-1"></div>
+            <div class="flex gap-2 text-[10px]">
+                <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-yellow-400"></div> High-Energy</span>
+                <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-green-500"></div> Catalytic</span>
+                <span class="flex items-center gap-1"><div class="w-2 h-2 rounded-full bg-purple-500"></div> Scavenger</span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="hud-panel rounded px-2 py-1 flex items-center gap-2 pointer-events-auto shadow-lg ml-auto">
+            <button onclick="sim.spawn(5)" class="bg-blue-600/80 hover:bg-blue-500 text-white px-2 py-1 rounded text-xs transition">
+                + Random
+            </button>
+            <button onclick="sim.reset()" class="bg-red-900/60 hover:bg-red-800 text-red-200 px-2 py-1 rounded text-xs transition border border-red-800/50">
+                Reset
+            </button>
+            <div class="flex flex-col w-20 ml-2">
+                <label class="text-[10px] text-slate-400 leading-none mb-1 flex justify-between">Speed <span id="speed-val">1x</span></label>
+                <input type="range" min="1" max="20" value="1" id="speed-slider" class="h-1 accent-blue-500 bg-slate-700 rounded-lg appearance-none cursor-pointer">
+            </div>
+        </div>
+    </div>
+
+    <!-- Canvas -->
+    <canvas id="simCanvas" class="flex-grow w-full h-full cursor-crosshair"></canvas>
+
+    <script>
+        // ==========================================
+        // FUNDAMENTAL CONSTANTS (Everything derives from these)
+        // ==========================================
+        const CONSTANTS = {
+            // Information Theory
+            BITS_PER_MOLECULE: 8,
+            ENERGY_PER_BIT: 4,
+            PHOTON_ENERGY: 15,
+            COMPLEMENTARITY_BONUS: 3, // FIX 9: Extracted magic number
+            
+            // Thermodynamics
+            ACTIVATION_TEMPERATURE: 1.5,
+            ENTROPY_RATE: 0.08,
+            MAINTENANCE_COST: 0.02,
+            ENTROPY_DEATH_THRESHOLD: 150,
+            ENTROPY_REPAIR_FACTOR: 0.94, // FIX 9: Extracted magic number
+            ENTROPY_REPAIR_COST: 0.8, // FIX 9: Extracted magic number
+            ENTROPY_CHILD_FACTOR: 0.8, // FIX 9: Extracted magic number
+            ENTROPY_PARENT_FACTOR: 1.2, // FIX 9: Extracted magic number
+            
+            // Chemistry
+            REACTION_RATE: 8,
+            CATALYSIS_THRESHOLD: 3,
+            MIN_REPAIR_MOLECULES: 5, // FIX 9: Extracted magic number
+            MIN_REPAIR_ENERGY: 5, // FIX 9: Extracted magic number
+            
+            // Physics
+            LIGHT_ATTENUATION: 3.0,
+            PRESSURE_GRADIENT: 8,
+            TEMPERATURE_GRADIENT: 12,
+            MIN_TEMPERATURE: 0, // FIX 6: Minimum temperature bound
+            DIFFUSION_RATE: 0.008,
+            GRAVITY: 0.03,
+            FRICTION: 0.96,
+            
+            // Replication
+            CLONE_ENERGY_THRESHOLD: 350,
+            MUTATION_RATE: 0.02,
+            DUPLICATION_RATE: 0.01,
+            DELETION_RATE: 0.01,
+            
+            // Initial Conditions
+            INITIAL_ENERGY: 120,
+            INITIAL_ENTROPY: 10,
+            
+            // Grid
+            DEBRIS_GRID_SIZE: 18,
+            NUTRIENT_GRID_SIZE: 25,
+        };
+
+        // ==========================================
+        // MOLECULAR PHYSICS & CHEMISTRY
+        // ==========================================
+        
+        function popcount(n) {
+            n = n & 0xFF;
+            let count = 0;
+            while (n > 0) { 
+                if (n & 1) count++; 
+                n >>= 1; 
+            }
+            return count;
+        }
+
+        function countAlternatingBits(n) {
+            n = n & 0xFF;
+            let alternating = 0;
+            for (let i = 0; i < 7; i++) {
+                if (((n >> i) & 1) !== ((n >> (i + 1)) & 1)) {
+                    alternating++;
+                }
+            }
+            return alternating;
+        }
+
+        function getMoleculeProperties(mol) {
+            const bits = popcount(mol);
+            return {
+                complexity: bits,
+                stability: 8 - Math.abs(bits - 4), // Middle values more stable
+                reactivity: popcount(mol & 0x0F), // Lower bits = reactive sites
+                polarity: popcount(mol & 0xAA) - popcount(mol & 0x55), // Alternating pattern
+                conjugation: countAlternatingBits(mol), // Light absorption
+                size: Math.floor(bits / 2)
+            };
+        }
+
+        function attemptReaction(mA, mB) {
+            // Multiple reaction pathways
+            const pathways = [
+                [(mA ^ mB) & 0xFF, (mA & mB) & 0xFF],  // XOR/AND split
+                [(mA | mB) & 0xFF, (mA & ~mB) & 0xFF], // OR/difference
+                [((mA + mB) >> 1) & 0xFF, ((mA + mB) & 1) ? 0xFF : 0x00], // Average split
+                [(~(mA ^ mB)) & 0xFF, (mA ^ 0xFF) & 0xFF], // Complement reactions
+            ];
+            
+            const results = pathways.map(products => {
+                const reactantBits = popcount(mA) + popcount(mB);
+                const productBits = products.reduce((sum, p) => sum + popcount(p), 0);
+                
+                // Energy from ordering (fewer bits = more ordered = energy release)
+                const orderEnergy = (reactantBits - productBits) * CONSTANTS.ENERGY_PER_BIT;
+                
+                // Bonus for complementary products
+                const complementarity = products.length >= 2 ? 
+                    popcount(products[0] & products[1]) : 0;
+                
+                // FIX 9: Use constant instead of magic number
+                const totalEnergy = orderEnergy + complementarity * CONSTANTS.COMPLEMENTARITY_BONUS;
+                
+                return {
+                    products: products.filter(p => p > 0), // Remove null products
+                    energy: totalEnergy
+                };
+            });
+            
+            // Select most favorable reaction
+            return results.sort((a, b) => b.energy - a.energy)[0];
+        }
+
+        function gaussian(mean, stdev) {
+            const u = 1 - Math.random();
+            const v = Math.random();
+            const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+            return z * stdev + mean;
+        }
+
+        // ==========================================
+        // ENVIRONMENT (Emergent zones from physics)
+        // ==========================================
+        
+        class Environment {
+            constructor(width, height) {
+                this.width = width;
+                this.height = height;
+                
+                // Nutrient field (regenerates from physics)
+                const nutrientGridWidth = Math.ceil(width / CONSTANTS.NUTRIENT_GRID_SIZE);
+                const nutrientGridHeight = Math.ceil(height / CONSTANTS.NUTRIENT_GRID_SIZE);
+                this.nutrientField = new Float32Array(nutrientGridWidth * nutrientGridHeight);
+                this.nutrientField.fill(1.0);
+                this.nutrientGridWidth = nutrientGridWidth;
+                this.nutrientGridHeight = nutrientGridHeight;
+                
+                // Debris system
+                this.debris = new DebrisManager(width, height);
+            }
+            
+            getPhysics(x, y) {
+                const depth = y / this.height;
+                return {
+                    // Beer-Lambert law for light
+                    lightIntensity: Math.exp(-depth * CONSTANTS.LIGHT_ATTENUATION),
+                    pressure: depth * CONSTANTS.PRESSURE_GRADIENT,
+                    // FIX 6: Prevent negative temperature
+                    temperature: Math.max(CONSTANTS.MIN_TEMPERATURE, 20 - depth * CONSTANTS.TEMPERATURE_GRADIENT),
+                    // Turbulence from surface waves
+                    turbulence: Math.max(0, (1 - depth) * Math.sin(x / 50 + Date.now() / 1000) * 0.1)
+                };
+            }
+            
+            tryGetNutrient(x, y, cellTraits) {
+                const physics = this.getPhysics(x, y);
+                const depth = y / this.height;
+                
+                // FIX 3: Bounds check for nutrient grid access
+                const gx = Math.min(Math.floor(x / CONSTANTS.NUTRIENT_GRID_SIZE), this.nutrientGridWidth - 1);
+                const gy = Math.min(Math.floor(y / CONSTANTS.NUTRIENT_GRID_SIZE), this.nutrientGridHeight - 1);
+                const idx = gy * this.nutrientGridWidth + gx;
+                
+                if (this.nutrientField[idx] < 0.1) return null;
+                
+                // Light splits water into oxygen near surface
+                if (Math.random() < physics.lightIntensity * 0.15 * cellTraits.uptakeRate) {
+                    this.nutrientField[idx] -= 0.01;
+                    return 0x03; // Oxygen-like molecule (sparse bits)
+                }
+                
+                // High pressure creates iron-rich molecules
+                if (physics.pressure > 5 && Math.random() < 0.08 * cellTraits.uptakeRate) {
+                    this.nutrientField[idx] -= 0.01;
+                    return 0xFE; // Iron-like (many bits)
+                }
+                
+                // Organic matter from debris decay
+                const debrisDensity = this.debris.getDensity(x, y);
+                if (Math.random() < debrisDensity * 0.02 * cellTraits.scavengeAbility) {
+                    const mol = this.debris.scavenge(x, y);
+                    return mol;
+                }
+                
+                // Temperature-dependent reactions create glucose-like molecules
+                if (depth > 0.6 && Math.random() < 0.05 * cellTraits.uptakeRate) {
+                    this.nutrientField[idx] -= 0.015;
+                    return 0xC6; // Glucose-like (medium complexity)
+                }
+                
+                return null;
+            }
+            
+            step() {
+                // Nutrient regeneration (photosynthetic input from "sun")
+                for (let i = 0; i < this.nutrientField.length; i++) {
+                    const gy = Math.floor(i / this.nutrientGridWidth);
+                    const depth = gy / this.nutrientGridHeight;
+                    
+                    // Surface regenerates faster (light energy input)
+                    const regenRate = Math.exp(-depth * 2) * CONSTANTS.DIFFUSION_RATE;
+                    this.nutrientField[i] = Math.min(1.0, this.nutrientField[i] + regenRate);
+                }
+                
+                // Debris physics
+                this.debris.step();
+            }
+        }
+
+        // ==========================================
+        // DEBRIS MANAGER (Marine Snow)
+        // ==========================================
+        
+        class DebrisManager {
+            constructor(width, height) {
+                this.width = width;
+                this.height = height;
+                this.gridSize = CONSTANTS.DEBRIS_GRID_SIZE;
+                this.grid = {};
+            }
+            
+            _key(x, y) {
+                const gx = Math.floor(x / this.gridSize);
+                const gy = Math.floor(y / this.gridSize);
+                return `${gx},${gy}`;
+            }
+            
+            add(x, y, molecules) {
+                const k = this._key(x, y);
+                if (!this.grid[k]) this.grid[k] = {};
+                
+                for (let mol in molecules) {
+                    if (!this.grid[k][mol]) this.grid[k][mol] = 0;
+                    this.grid[k][mol] += molecules[mol];
+                }
+            }
+            
+            scavenge(x, y) {
+                const k = this._key(x, y);
+                const cellDebris = this.grid[k];
+                if (!cellDebris) return null;
+                
+                const types = Object.keys(cellDebris);
+                if (types.length === 0) return null;
+                
+                const type = types[Math.floor(Math.random() * types.length)];
+                if (cellDebris[type] > 0) {
+                    cellDebris[type]--;
+                    if (cellDebris[type] <= 0) delete cellDebris[type];
+                    if (Object.keys(cellDebris).length === 0) delete this.grid[k];
+                    return parseInt(type);
+                }
+                return null;
+            }
+            
+            getDensity(x, y) {
+                const k = this._key(x, y);
+                const cellDebris = this.grid[k];
+                if (!cellDebris) return 0;
+                
+                const total = Object.values(cellDebris).reduce((a, b) => a + b, 0);
+                return Math.min(1.0, total / 50);
+            }
+            
+            step() {
+                const maxGy = Math.floor(this.height / this.gridSize) - 1;
+                
+                // Sedimentation (gravity)
+                const keys = Object.keys(this.grid);
+                const entries = keys.map(k => {
+                    const [gx, gy] = k.split(',').map(Number);
+                    return { k, gx, gy };
+                }).sort((a, b) => b.gy - a.gy); // Bottom-up
+                
+                for (let e of entries) {
+                    if (e.gy >= maxGy) continue;
+                    
+                    // Fall based on gravity constant
+                    if (Math.random() < CONSTANTS.GRAVITY) {
+                        const targetKey = `${e.gx},${e.gy + 1}`;
+                        
+                        if (!this.grid[targetKey]) this.grid[targetKey] = {};
+                        
+                        const source = this.grid[e.k];
+                        const target = this.grid[targetKey];
+                        
+                        for (let mol in source) {
+                            if (!target[mol]) target[mol] = 0;
+                            target[mol] += source[mol];
+                        }
+                        
+                        delete this.grid[e.k];
+                    }
+                }
+                
+                // Decay (entropy increase)
+                if (Math.random() < CONSTANTS.ENTROPY_RATE * 0.5) {
+                    const freshKeys = Object.keys(this.grid);
+                    if (freshKeys.length === 0) return;
+                    const k = freshKeys[Math.floor(Math.random() * freshKeys.length)];
+                    const types = Object.keys(this.grid[k]);
+                    if (types.length > 0) {
+                        const t = types[Math.floor(Math.random() * types.length)];
+                        this.grid[k][t]--;
+                        if (this.grid[k][t] <= 0) delete this.grid[k][t];
+                        if (Object.keys(this.grid[k]).length === 0) delete this.grid[k];
+                    }
+                }
+            }
+            
+            draw(ctx) {
+                ctx.fillStyle = "rgba(160, 140, 180, 0.4)";
+                for (let k in this.grid) {
+                    const [gx, gy] = k.split(',').map(Number);
+                    const total = Object.values(this.grid[k]).reduce((a, b) => a + b, 0);
+                    const size = Math.min(this.gridSize - 2, Math.max(2, total / 3));
+                    
+                    ctx.fillRect(
+                        gx * this.gridSize + this.gridSize / 2 - size / 2,
+                        gy * this.gridSize + this.gridSize / 2 - size / 2,
+                        size, size
+                    );
+                }
+            }
+        }
+
+        // ==========================================
+        // CELL (Fully Emergent)
+        // ==========================================
+        
+        class Cell {
+            constructor(genome, x, y) {
+                this.genome = [...genome];
+                this.ribosomePos = 0;
+                
+                this.cytoplasm = {};
+                this.membrane = {};
+                
+                this.energy = CONSTANTS.INITIAL_ENERGY;
+                this.entropy = CONSTANTS.INITIAL_ENTROPY;
+                
+                this.pos = { x, y };
+                this.vel = { x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2 };
+                
+                this.age = 0;
+                this.alive = true;
+                
+                // Stats for visualization
+                this.stats = {
+                    lightEnergy: 0,
+                    catalyticEnergy: 0,
+                    scavengeEnergy: 0
+                };
+                
+                this.radius = 4 + (this.genome.length / 6);
+                this.color = `hsl(${(genome[0] * 360 / 255)}, 60%, 50%)`;
+            }
+            
+            // Emergent traits from genome structure
+            get traits() {
+                if (this._cachedTraits && this.age % 20 !== 0) return this._cachedTraits;
+                
+                const avgBits = this.genome.reduce((s, g) => s + popcount(g), 0) / this.genome.length;
+                const diversity = new Set(this.genome).size / this.genome.length;
+                const symmetry = this.genome.filter((g, i) => 
+                    g === this.genome[this.genome.length - 1 - i]
+                ).length / this.genome.length;
+                
+                this._cachedTraits = {
+                    // High complexity → better uptake
+                    uptakeRate: Math.min(1, avgBits / 6),
+                    
+                    // Diverse genome → porous membrane
+                    permeability: diversity * 0.8,
+                    
+                    // Low symmetry → better scavenging
+                    scavengeAbility: (1 - symmetry) * 0.7,
+                    
+                    // Genome length → metabolic overhead
+                    metabolicRate: 1 / Math.log(this.genome.length + 2)
+                };
+                
+                return this._cachedTraits;
+            }
+            
+            addToPool(pool, mol, amount) {
+                if (!pool[mol]) pool[mol] = 0;
+                pool[mol] += amount;
+                if (pool[mol] <= 0) delete pool[mol];
+            }
+            
+            getPoolList(pool) {
+                const list = [];
+                for (let mol in pool) {
+                    for (let i = 0; i < pool[mol]; i++) list.push(parseInt(mol));
+                }
+                return list;
+            }
+            
+            timestep(env) {
+                if (!this.alive) return;
+                this.age++;
+                
+                const physics = env.getPhysics(this.pos.x, this.pos.y);
+                
+                // 1. Entropy increases (second law of thermodynamics)
+                this.entropy += CONSTANTS.ENTROPY_RATE;
+                
+                // 2. Maintenance cost
+                const maintenanceCost = this.entropy * CONSTANTS.MAINTENANCE_COST;
+                this.energy -= maintenanceCost;
+                
+                // 3. Gene expression
+                this.expressionStep();
+                
+                // 4. Repair (reduces entropy)
+                if (this.canRepair()) {
+                    this.entropy *= CONSTANTS.ENTROPY_REPAIR_FACTOR;
+                    this.energy -= CONSTANTS.ENTROPY_REPAIR_COST;
+                }
+                
+                // 5. Photoreception (emergent)
+                this.photoreceptionStep(physics.lightIntensity);
+                
+                // 6. Nutrient uptake
+                const nutrient = env.tryGetNutrient(this.pos.x, this.pos.y, this.traits);
+                if (nutrient !== null) {
+                    this.addToPool(this.cytoplasm, nutrient, 1);
+                }
+                
+                // 7. Catalytic reactions
+                for (let i = 0; i < CONSTANTS.REACTION_RATE; i++) {
+                    this.catalyticReactionStep();
+                }
+                
+                // 8. Emergent motors (gradient following)
+                if (this.age % 5 === 0) {
+                    this.motorStep(env);
+                }
+                
+                // 9. Physics
+                this.vel.x += (Math.random() - 0.5) * 0.1 + physics.turbulence;
+                this.vel.y += (Math.random() - 0.5) * 0.1 + CONSTANTS.GRAVITY * 0.3;
+                
+                this.pos.x += this.vel.x;
+                this.pos.y += this.vel.y;
+                this.vel.x *= CONSTANTS.FRICTION;
+                this.vel.y *= CONSTANTS.FRICTION;
+                
+                // Boundaries
+                if (this.pos.x < this.radius) { 
+                    this.pos.x = this.radius; 
+                    this.vel.x *= -0.8; 
+                }
+                if (this.pos.x > env.width - this.radius) { 
+                    this.pos.x = env.width - this.radius; 
+                    this.vel.x *= -0.8; 
+                }
+                if (this.pos.y < this.radius) { 
+                    this.pos.y = this.radius; 
+                    this.vel.y *= -0.8; 
+                }
+                if (this.pos.y > env.height - this.radius) { 
+                    this.pos.y = env.height - this.radius; 
+                    this.vel.y *= -0.8; 
+                }
+                
+                // 10. Death from thermodynamic collapse
+                if (this.entropy > CONSTANTS.ENTROPY_DEATH_THRESHOLD || this.energy < 0) {
+                    this.die(env);
+                }
+            }
+            
+            expressionStep() {
+                if (!this.genome.length) return;
+                
+                const gene = this.genome[this.ribosomePos];
+                const totalMols = Object.values(this.cytoplasm).reduce((a, b) => a + b, 0);
+                
+                if (totalMols < 80 && this.energy >= 1) {
+                    this.addToPool(this.cytoplasm, gene, 1);
+                    this.energy -= 1;
+                    
+                    // Membrane crossing based on molecular properties
+                    const props = getMoleculeProperties(gene);
+                    if (Math.random() < this.traits.permeability && props.polarity < 2) {
+                        this.addToPool(this.cytoplasm, gene, -1);
+                        this.addToPool(this.membrane, gene, 1);
+                    }
+                }
+                
+                this.ribosomePos = (this.ribosomePos + 1) % this.genome.length;
+            }
+            
+            canRepair() {
+                const mols = this.getPoolList(this.cytoplasm);
+                // FIX 9: Use constants instead of magic numbers
+                return mols.length > CONSTANTS.MIN_REPAIR_MOLECULES && this.energy > CONSTANTS.MIN_REPAIR_ENERGY;
+            }
+            
+            catalyticReactionStep() {
+                const mols = this.getPoolList(this.cytoplasm);
+                if (mols.length < 3) return;
+                
+                // FIX 8: More robust substrate selection with safety check
+                const catalystIdx = Math.floor(Math.random() * mols.length);
+                const catalyst = mols[catalystIdx];
+                
+                // Create array of available indices excluding catalyst
+                const availableIndices = [];
+                for (let i = 0; i < mols.length; i++) {
+                    if (i !== catalystIdx) availableIndices.push(i);
+                }
+                
+                if (availableIndices.length < 2) return; // Safety check
+                
+                // Select two different substrates
+                const sub1Idx = availableIndices[Math.floor(Math.random() * availableIndices.length)];
+                const sub1 = mols[sub1Idx];
+                
+                const sub2Indices = availableIndices.filter(i => i !== sub1Idx);
+                const sub2Idx = sub2Indices[Math.floor(Math.random() * sub2Indices.length)];
+                const sub2 = mols[sub2Idx];
+                
+                // Catalytic fit (complementary bits)
+                const catalyticFit = popcount(catalyst & sub1 & sub2);
+                
+                if (catalyticFit >= CONSTANTS.CATALYSIS_THRESHOLD) {
+                    const reaction = attemptReaction(sub1, sub2);
+                    
+                    // FIX 4: Prevent energy from going too negative from reactions
+                    if (reaction && this.energy >= Math.max(0, -reaction.energy * 0.1)) {
+                        // Consume substrates (catalyst unchanged)
+                        this.addToPool(this.cytoplasm, sub1, -1);
+                        this.addToPool(this.cytoplasm, sub2, -1);
+                        
+                        // Produce products
+                        reaction.products.forEach(p => this.addToPool(this.cytoplasm, p, 1));
+                        
+                        // Energy change
+                        this.energy += reaction.energy;
+                        
+                        if (reaction.energy > 0) {
+                            this.stats.catalyticEnergy += reaction.energy;
+                        }
+                    }
+                }
+            }
+            
+            photoreceptionStep(intensity) {
+                if (Math.random() > intensity || Math.random() > 0.5) return;
+                
+                const allMolecules = [
+                    ...this.getPoolList(this.membrane),
+                    ...this.getPoolList(this.cytoplasm)
+                ];
+                
+                if (!allMolecules.length) return;
+                
+                const target = allMolecules[Math.floor(Math.random() * allMolecules.length)];
+                const props = getMoleculeProperties(target);
+                
+                // Photon absorption based on conjugation (alternating double bonds)
+                const absorptionChance = props.conjugation / 7.0;
+                
+                if (Math.random() < absorptionChance) {
+                    // Excite molecule (flip random bit)
+                    const flip = 1 << Math.floor(Math.random() * CONSTANTS.BITS_PER_MOLECULE);
+                    const excited = (target ^ flip) & 0xFF;
+                    
+                    // Energy stored in excited state
+                    const energyGain = CONSTANTS.PHOTON_ENERGY * (props.conjugation / 7.0);
+                    
+                    // Remove ground state, add excited state
+                    const inMembrane = this.membrane[target] > 0;
+                    if (inMembrane) {
+                        this.addToPool(this.membrane, target, -1);
+                        this.addToPool(this.membrane, excited, 1);
+                    } else {
+                        this.addToPool(this.cytoplasm, target, -1);
+                        this.addToPool(this.cytoplasm, excited, 1);
+                    }
+                    
+                    this.energy += energyGain;
+                    this.stats.lightEnergy += energyGain;
+                }
+            }
+            
+            motorStep(env) {
+                const mems = this.getPoolList(this.membrane);
+                const fuels = this.getPoolList(this.cytoplasm);
+                
+                if (!mems.length || !fuels.length) return;
+                if (this.energy < 3) return;
+                
+                // Sample environmental gradients
+                const gradients = this.sampleGradients(env);
+                
+                let netForce = { x: 0, y: 0 };
+                
+                // FIX 7: Sample membrane molecules instead of iterating all
+                const sampleSize = Math.min(5, mems.length);
+                for (let i = 0; i < sampleSize; i++) {
+                    const mem = mems[Math.floor(Math.random() * mems.length)];
+                    
+                    for (let grad of gradients) {
+                        const affinity = popcount(mem & grad.moleculeType) / 8.0;
+                        
+                        if (affinity > 0.4) {
+                            // Attraction/repulsion based on polarity match
+                            const memPolarity = getMoleculeProperties(mem).polarity;
+                            const gradPolarity = getMoleculeProperties(grad.moleculeType).polarity;
+                            const attraction = Math.sign(memPolarity) === Math.sign(gradPolarity) ? 1 : -1;
+                            
+                            netForce.x += grad.dx * affinity * attraction * 0.5;
+                            netForce.y += grad.dy * affinity * attraction * 0.5;
+                        }
+                    }
+                }
+                
+                // Apply force using fuel
+                if (Math.abs(netForce.x) > 0.1 || Math.abs(netForce.y) > 0.1) {
+                    const fuel = fuels[0];
+                    const fuelPower = popcount(fuel) * 0.15;
+                    
+                    this.vel.x += netForce.x * fuelPower;
+                    this.vel.y += netForce.y * fuelPower;
+                    
+                    this.addToPool(this.cytoplasm, fuel, -1);
+                    this.energy -= 3;
+                }
+            }
+            
+            sampleGradients(env) {
+                const sampleDist = 30;
+                const gradients = [];
+                
+                // Sample in 4 directions
+                const directions = [
+                    { dx: sampleDist, dy: 0 },
+                    { dx: -sampleDist, dy: 0 },
+                    { dx: 0, dy: sampleDist },
+                    { dx: 0, dy: -sampleDist }
+                ];
+                
+                for (let dir of directions) {
+                    // FIX 2: Proper boundary clamping
+                    const sampleX = Math.max(0, Math.min(env.width - 1, this.pos.x + dir.dx));
+                    const sampleY = Math.max(0, Math.min(env.height - 1, this.pos.y + dir.dy));
+                    
+                    const physics = env.getPhysics(sampleX, sampleY);
+                    const density = env.debris.getDensity(sampleX, sampleY);
+                    
+                    // Light gradient
+                    if (physics.lightIntensity > 0.1) {
+                        gradients.push({
+                            moleculeType: 0x03, // Oxygen-like
+                            concentration: physics.lightIntensity,
+                            dx: Math.sign(dir.dx),
+                            dy: Math.sign(dir.dy)
+                        });
+                    }
+                    
+                    // Debris gradient (scavenging)
+                    if (density > 0.1) {
+                        gradients.push({
+                            moleculeType: 0xC6, // Organic carbon
+                            concentration: density,
+                            dx: Math.sign(dir.dx),
+                            dy: Math.sign(dir.dy)
+                        });
+                    }
+                }
+                
+                return gradients;
+            }
+            
+            clone() {
+                const newGenome = [...this.genome];
+                
+                // Point mutations
+                for (let i = 0; i < newGenome.length; i++) {
+                    if (Math.random() < CONSTANTS.MUTATION_RATE) {
+                        newGenome[i] ^= (1 << Math.floor(Math.random() * CONSTANTS.BITS_PER_MOLECULE));
+                    }
+                }
+                
+                // Gene duplication
+                if (Math.random() < CONSTANTS.DUPLICATION_RATE && newGenome.length < 20) {
+                    const idx = Math.floor(Math.random() * newGenome.length);
+                    newGenome.splice(idx, 0, newGenome[idx]);
+                }
+                
+                // Gene deletion
+                if (Math.random() < CONSTANTS.DELETION_RATE && newGenome.length > 3) {
+                    newGenome.splice(Math.floor(Math.random() * newGenome.length), 1);
+                }
+                
+                const child = new Cell(newGenome, this.pos.x, this.pos.y);
+                
+                // FIX 4: Correct energy conservation during cloning
+                const splitEnergy = this.energy / 2;
+                child.energy = splitEnergy;
+                this.energy = splitEnergy;
+                
+                // FIX 9: Use constants for entropy factors
+                child.entropy = this.entropy * CONSTANTS.ENTROPY_CHILD_FACTOR; // Child starts fresher
+                this.entropy *= CONSTANTS.ENTROPY_PARENT_FACTOR; // Parent ages
+                
+                return child;
+            }
+            
+            die(env) {
+                this.alive = false;
+                const corpse = { ...this.cytoplasm, ...this.membrane };
+                env.debris.add(this.pos.x, this.pos.y, corpse);
+            }
+            
+            getStrategyColor() {
+                const { lightEnergy, catalyticEnergy, scavengeEnergy } = this.stats;
+                const total = lightEnergy + catalyticEnergy + scavengeEnergy;
+                if (total < 5) return "#888888";
+                
+                // Normalize
+                const light = lightEnergy / total;
+                const catalytic = catalyticEnergy / total;
+                const scavenge = scavengeEnergy / total;
+                
+                if (light > catalytic && light > scavenge) return "#fbbf24";
+                if (catalytic > light && catalytic > scavenge) return "#22c55e";
+                if (scavenge > light && scavenge > catalytic) return "#a855f7";
+                
+                return "#ffffff";
+            }
+        }
+
+        // ==========================================
+        // SIMULATION
+        // ==========================================
+        
+        class Simulation {
+            constructor() {
+                this.canvas = document.getElementById('simCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.resize();
+                
+                this.env = new Environment(this.canvas.width, this.canvas.height);
+                this.cells = [];
+                
+                window.addEventListener('resize', () => {
+                    this.resize();
+                    this.env = new Environment(this.canvas.width, this.canvas.height);
+                });
+                
+                this.slider = document.getElementById('speed-slider');
+                this.speedDisplay = document.getElementById('speed-val');
+                this.popDisplay = document.getElementById('pop-count');
+                this.nrgDisplay = document.getElementById('avg-energy');
+                this.entDisplay = document.getElementById('avg-entropy');
+                
+                this.loop = this.loop.bind(this);
+                requestAnimationFrame(this.loop);
+            }
+            
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+            }
+            
+            spawn(n = 1) {
+                for (let i = 0; i < n; i++) {
+                    const gLen = 6 + Math.floor(Math.random() * 8);
+                    const genome = Array(gLen).fill(0).map(() => 
+                        Math.floor(Math.random() * 256)
+                    );
+                    
+                    this.cells.push(new Cell(
+                        genome,
+                        Math.random() * this.canvas.width,
+                        Math.random() * this.canvas.height
+                    ));
+                }
+            }
+            
+            reset() {
+                this.cells = [];
+                this.env = new Environment(this.canvas.width, this.canvas.height);
+            }
+            
+            resolveCollisions() {
+                for (let i = 0; i < this.cells.length; i++) {
+                    for (let j = i + 1; j < this.cells.length; j++) {
+                        const c1 = this.cells[i];
+                        const c2 = this.cells[j];
+                        
+                        const dx = c1.pos.x - c2.pos.x;
+                        const dy = c1.pos.y - c2.pos.y;
+                        const distSq = dx * dx + dy * dy;
+                        const minDist = c1.radius + c2.radius;
+                        
+                        // FIX 1: Check distSq > 0 first to prevent division by zero
+                        if (distSq > 0 && distSq < minDist * minDist) {
+                            const dist = Math.sqrt(distSq);
+                            const overlap = minDist - dist;
+                            const nx = dx / dist;
+                            const ny = dy / dist;
+                            const force = overlap * 0.05;
+                            
+                            c1.vel.x += nx * force;
+                            c1.vel.y += ny * force;
+                            c2.vel.x -= nx * force;
+                            c2.vel.y -= ny * force;
+                        }
+                    }
+                }
+            }
+            
+            loop() {
+                const speed = parseInt(this.slider.value);
+                this.speedDisplay.innerText = speed + "x";
+                
+                for (let s = 0; s < speed; s++) {
+                    this.env.step();
+                    this.resolveCollisions();
+                    
+                    const babies = [];
+                    for (let cell of this.cells) {
+                        cell.timestep(this.env);
+                        
+                        if (cell.alive && cell.energy > CONSTANTS.CLONE_ENERGY_THRESHOLD) {
+                            // Natural carrying capacity from resource depletion
+                            if (this.cells.length + babies.length < 500) {
+                                babies.push(cell.clone());
+                            }
+                        }
+                    }
+                    
+                    this.cells = this.cells.filter(c => c.alive);
+                    this.cells.push(...babies);
+                }
+                
+                this.draw();
+                if (Math.random() < 0.1) this.updateStats();
+                
+                requestAnimationFrame(this.loop);
+            }
+            
+            draw() {
+                const ctx = this.ctx;
+                const w = this.canvas.width;
+                const h = this.canvas.height;
+                
+                // Environment gradient
+                const grad = ctx.createLinearGradient(0, 0, 0, h);
+                grad.addColorStop(0, "#0ea5e9");
+                grad.addColorStop(0.35, "#1e3a8a");
+                grad.addColorStop(0.65, "#0f172a");
+                grad.addColorStop(1, "#1a1614");
+                
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, w, h);
+                
+                // Draw debris
+                this.env.debris.draw(ctx);
+                
+                // Draw cells
+                for (let cell of this.cells) {
+                    // Color based on energy
+                    let r, g, b;
+                    if (cell.energy < 100) {
+                        const p = Math.max(0, cell.energy / 100);
+                        r = 255; g = Math.floor(255 * p); b = 0;
+                    } else {
+                        const p = Math.min(1, (cell.energy - 100) / 200);
+                        r = Math.floor(255 * (1 - p)); g = 255; b = 0;
+                    }
+                    
+                    // Fade based on entropy
+                    const entropyRatio = Math.min(1, cell.entropy / CONSTANTS.ENTROPY_DEATH_THRESHOLD);
+                    ctx.globalAlpha = 1.0 - (entropyRatio * 0.4);
+                    
+                    // Cell body
+                    ctx.beginPath();
+                    ctx.arc(cell.pos.x, cell.pos.y, cell.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgb(${r},${g},${b})`;
+                    ctx.fill();
+                    
+                    // Membrane (based on membrane molecule count)
+                    const memCount = Object.keys(cell.membrane).length;
+                    if (memCount > 0) {
+                        ctx.lineWidth = 1 + (memCount / 8);
+                        ctx.strokeStyle = "rgba(255,255,255,0.3)";
+                        ctx.stroke();
+                    }
+                    
+                    // Strategy indicator (nucleus)
+                    ctx.globalAlpha = 1.0;
+                    ctx.beginPath();
+                    ctx.arc(cell.pos.x, cell.pos.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = cell.getStrategyColor();
+                    ctx.fill();
+                    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                    
+                    // Genome indicator (outer ring)
+                    ctx.beginPath();
+                    ctx.arc(cell.pos.x, cell.pos.y, cell.radius + 2, 0, Math.PI * 2);
+                    ctx.strokeStyle = cell.color;
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                }
+                
+                ctx.globalAlpha = 1.0;
+            }
+            
+            updateStats() {
+                this.popDisplay.innerText = this.cells.length;
+                
+                if (this.cells.length > 0) {
+                    const totalE = this.cells.reduce((a, c) => a + c.energy, 0);
+                    const totalEnt = this.cells.reduce((a, c) => a + c.entropy, 0);
+                    
+                    this.nrgDisplay.innerText = Math.floor(totalE / this.cells.length);
+                    this.entDisplay.innerText = Math.floor(totalEnt / this.cells.length);
+                } else {
+                    this.nrgDisplay.innerText = 0;
+                    this.entDisplay.innerText = 0;
+                }
+            }
+        }
+        
+        const sim = new Simulation();
+        sim.spawn(10);
+    </script>
+</body>
+</html>
