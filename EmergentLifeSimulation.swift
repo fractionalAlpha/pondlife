@@ -84,12 +84,13 @@ final class SimulationModel: ObservableObject {
     func stepFrame() {
         guard environment.width > 0, environment.height > 0 else { return }
         for _ in 0..<max(speed, 1) {
+            let currentTime = Date().timeIntervalSince1970
             environment.step()
             resolveCollisions()
 
             var babies: [Cell] = []
             for cell in cells {
-                cell.timestep(environment: environment)
+                cell.timestep(environment: environment, time: currentTime)
                 if cell.alive && cell.energy > Constants.cloneEnergyThreshold {
                     if cells.count + babies.count < 500 {
                         babies.append(cell.clone())
@@ -315,20 +316,20 @@ private final class Environment {
         debris = DebrisManager(width: width, height: height)
     }
 
-    func getPhysics(x: Double, y: Double) -> PhysicsSample {
+    func getPhysics(x: Double, y: Double, time: Double) -> PhysicsSample {
         let depth = y / height
         let lightIntensity = exp(-depth * Constants.lightAttenuation)
         let pressure = depth * Constants.pressureGradient
         let temperature = max(Constants.minTemperature, 20 - depth * Constants.temperatureGradient)
-        let turbulence = max(0, (1 - depth) * sin(x / 50 + Date().timeIntervalSince1970) * 0.1)
+        let turbulence = max(0, (1 - depth) * sin(x / 50 + time) * 0.1)
         return PhysicsSample(lightIntensity: lightIntensity,
                              pressure: pressure,
                              temperature: temperature,
                              turbulence: turbulence)
     }
 
-    func tryGetNutrient(x: Double, y: Double, traits: CellTraits) -> UInt8? {
-        let physics = getPhysics(x: x, y: y)
+    func tryGetNutrient(x: Double, y: Double, traits: CellTraits, time: Double) -> UInt8? {
+        let physics = getPhysics(x: x, y: y, time: time)
         let depth = y / height
 
         let gx = min(Int(x / Constants.nutrientGridSize), nutrientGridWidth - 1)
@@ -521,10 +522,10 @@ private final class Cell {
         return traits
     }
 
-    func timestep(environment: Environment) {
+    func timestep(environment: Environment, time: Double) {
         guard alive else { return }
         age += 1
-        let physics = environment.getPhysics(x: position.x, y: position.y)
+        let physics = environment.getPhysics(x: position.x, y: position.y, time: time)
 
         entropy += Constants.entropyRate
         let maintenanceCost = entropy * Constants.maintenanceCost
@@ -539,7 +540,7 @@ private final class Cell {
 
         photoreceptionStep(intensity: physics.lightIntensity)
 
-        if let nutrient = environment.tryGetNutrient(x: position.x, y: position.y, traits: traits) {
+        if let nutrient = environment.tryGetNutrient(x: position.x, y: position.y, traits: traits, time: time) {
             addToPool(&cytoplasm, molecule: nutrient, amount: 1)
         }
 
@@ -548,7 +549,7 @@ private final class Cell {
         }
 
         if age % 5 == 0 {
-            motorStep(environment: environment)
+            motorStep(environment: environment, time: time)
         }
 
         velocity.dx += (Double.random(in: 0..<1) - 0.5) * 0.1 + physics.turbulence
@@ -661,12 +662,12 @@ private final class Cell {
         }
     }
 
-    private func motorStep(environment: Environment) {
+    private func motorStep(environment: Environment, time: Double) {
         let mems = poolList(membrane)
         let fuels = poolList(cytoplasm)
         guard !mems.isEmpty, !fuels.isEmpty, energy >= 3 else { return }
 
-        let gradients = sampleGradients(environment: environment)
+        let gradients = sampleGradients(environment: environment, time: time)
         var netForce = CGVector(dx: 0, dy: 0)
         let sampleSize = min(5, mems.count)
 
@@ -694,7 +695,7 @@ private final class Cell {
         }
     }
 
-    private func sampleGradients(environment: Environment) -> [GradientSample] {
+    private func sampleGradients(environment: Environment, time: Double) -> [GradientSample] {
         let sampleDist: Double = 30
         let directions: [CGVector] = [
             CGVector(dx: sampleDist, dy: 0),
@@ -707,7 +708,7 @@ private final class Cell {
         for dir in directions {
             let sampleX = max(0, min(environment.width - 1, position.x + dir.dx))
             let sampleY = max(0, min(environment.height - 1, position.y + dir.dy))
-            let physics = environment.getPhysics(x: sampleX, y: sampleY)
+            let physics = environment.getPhysics(x: sampleX, y: sampleY, time: time)
             let density = environment.debris.getDensity(x: sampleX, y: sampleY)
 
             if physics.lightIntensity > 0.1 {
