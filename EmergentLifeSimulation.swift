@@ -169,14 +169,10 @@ final class SimulationModel: ObservableObject {
 
     private func drawDebris(in context: inout GraphicsContext) {
         for (key, molecules) in environment.debris.grid {
-            let parts = key.split(separator: ",")
-            guard parts.count == 2,
-                  let gx = Double(parts[0]),
-                  let gy = Double(parts[1]) else { continue }
             let total = molecules.values.reduce(0, +)
             let size = min(Constants.debrisGridSize - 2, max(2, Double(total) / 3))
-            let rect = CGRect(x: gx * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
-                              y: gy * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
+            let rect = CGRect(x: Double(key.x) * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
+                              y: Double(key.y) * Constants.debrisGridSize + Constants.debrisGridSize / 2 - size / 2,
                               width: size,
                               height: size)
             context.fill(Path(rect), with: .color(Color(red: 0.63, green: 0.55, blue: 0.7, opacity: 0.4)))
@@ -378,17 +374,21 @@ private final class Environment {
 private final class DebrisManager {
     let width: Double
     let height: Double
-    var grid: [String: [UInt8: Int]] = [:]
+    struct GridKey: Hashable {
+        let x: Int
+        let y: Int
+    }
+    var grid: [GridKey: [UInt8: Int]] = [:]
 
     init(width: Double, height: Double) {
         self.width = width
         self.height = height
     }
 
-    private func key(x: Double, y: Double) -> String {
+    private func key(x: Double, y: Double) -> GridKey {
         let gx = Int(x / Constants.debrisGridSize)
         let gy = Int(y / Constants.debrisGridSize)
-        return "\(gx),\(gy)"
+        return GridKey(x: gx, y: gy)
     }
 
     func add(x: Double, y: Double, molecules: [UInt8: Int]) {
@@ -431,22 +431,14 @@ private final class DebrisManager {
     func step() {
         let maxGy = Int(height / Constants.debrisGridSize) - 1
         let sortedKeys = grid.keys.sorted { lhs, rhs in
-            let lhsParts = lhs.split(separator: ",")
-            let rhsParts = rhs.split(separator: ",")
-            let lhsGy = Int(lhsParts.last ?? "0") ?? 0
-            let rhsGy = Int(rhsParts.last ?? "0") ?? 0
-            return lhsGy > rhsGy
+            lhs.y > rhs.y
         }
 
         for key in sortedKeys {
-            let parts = key.split(separator: ",")
-            guard parts.count == 2,
-                  let gx = Int(parts[0]),
-                  let gy = Int(parts[1]) else { continue }
-            if gy >= maxGy { continue }
+            if key.y >= maxGy { continue }
 
             if Double.random(in: 0..<1) < Constants.gravity {
-                let targetKey = "\(gx),\(gy + 1)"
+                let targetKey = GridKey(x: key.x, y: key.y + 1)
                 if grid[targetKey] == nil {
                     grid[targetKey] = [:]
                 }
